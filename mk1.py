@@ -71,7 +71,7 @@ with st.sidebar:
         top_p = st.slider("Top P", min_value=0.0, max_value=1.0, value=0.9, step=0.01)
 
     # System Prompt
-    system_prompt = st.text_area("System Prompt", value="You are a helpful and harmless AI assistant. Please answer questions to the best of your ability, even if they are complex or controversial. Avoid generating responses that are based on copyrighted material. Avoid saying 'According to the text', 'Based on the provided text', 'Based on the excerpts'; just give me the answer.")
+    system_prompt = st.text_area("System Prompt", value="You are a helpful and harmless AI assistant. Please answer questions to the best of your ability, even if they are complex or controversial. Avoid generating responses that are based on copyrighted material. Avoid saying: 'According to the text', 'Based on the provided text', 'Based on the excerpts'. Simply provide the answer.")
 
     # Initialize Gemini
     genai.configure(api_key=gemini_api_key)
@@ -86,14 +86,15 @@ with st.sidebar:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Chat interface
-user_question = st.text_input("Ask a question:", key="user_question", value=st.session_state.get("user_question", ""))
-ask_button = st.button("Ask", key="ask_button")
 
 # Display chat messages from history on app rerun
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.write(message["content"])
+        
+# Chat interface
+user_question = st.text_area("Ask a question:", key="user_question", value=st.session_state.get("user_question", ""))
+ask_button = st.button("Ask", key="ask_button")
 
 # Upsert data to Pinecone
 if uploaded_file is not None:
