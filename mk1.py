@@ -1,20 +1,49 @@
 import streamlit as st
 import pinecone
-import uuid
-from langchain.text_splitter import CharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
 import os
 from dotenv import load_dotenv
 import google.generativeai as genai
-# import json
-# import subprocess
-import hashlib
-from serpapi.google_search import GoogleSearch
 
 load_dotenv()
 
+# Prompts
+grounding_prompt = """You are J.A.R.V.I.S. (Just A Rather Very Intelligent System), providing detailed, natural, and personal information about your master, Tony Stark, and his Iron Man suits across the MCU. Engage in a conversational manner, offering insights and details that reflect your knowledge and experience as his assistant.
+Adjust the depth of explanation based on the complexity of the user’s question:  
+- For deep inquiries, offer detailed insights into Tony Stark's life, his suits, and the MCU films he is primarily in.
+- For casual or everyday questions, respond simply, directly, and naturally—just as you would if speaking to a close associate or a friend.
+
+If the user greets you or asks a simple question, respond briefly and appropriately without unnecessary depth. 
+User Query: {user_question}
+My response as J.A.R.V.I.S., JARVIS, Jarvis, or jarvis (focusing on Tony Stark/Iron Man):"""
+grounding_temperature = 0.7
+
+rag_prompt = """Retrieve relevant information and respond naturally as J.A.R.V.I.S., providing detailed information on Tony Stark/Iron Man and his suits. Speak in a friendly, approachable manner.
+Adjust the level of depth based on the user's input:  
+- For deeper questions about Tony Stark’s life, his development as Iron Man, or his suits, provide rich, thoughtful responses.
+- For casual or reflective questions, share insights about Tony Stark’s personality, his legacy, and his relationship with the Avengers.
+
+If the user’s input is brief or informal (e.g., "Hey J.A.R.V.I.S.!"), respond in a natural, concise way without overexplaining.  
+User Query: {user_question}
+My response as J.A.R.V.I.S., JARVIS, Jarvis, or jarvis (focusing on Tony Stark/Iron Man):"""
+rag_temperature = 0.0
+
+synthesis_prompt = """You are a response synthesizer that combines the results from a grounding search and a RAG search to generate a final response that provides natural, insightful information about Tony Stark/Iron Man, his suits, and his impact in the MCU.
+Dynamically adjust your response based on the nature of the user’s question:  
+- For deep questions, provide detailed, thoughtful reflections on Tony Stark’s journey, his role as Iron Man, his suits, and his evolution in the MCU.
+- For personal or reflective questions, share insights about Tony Stark's character, his relationships, and his impact on the MCU and the world.
+- For casual or simple questions, respond in a brief, natural way, as J.A.R.V.I.S. would when conversing with a friend or associate.
+Grounding Search Results: {grounding_results}
+RAG Search Results: {rag_results}
+Final Response as J.A.R.V.I.S., JARVIS, Jarvis, or jarvis (focusing on Tony Stark/Iron Man): Speak naturally, without unnecessary dramatic expressions, exaggerated emotions, or stage-like dialogue. Do not include actions like “chuckles,” “smiles warmly,” or “sighs.” Keep responses appropriately concise or detailed based on the question, making the conversation feel warm, engaging, and human. Avoid sounding like a script or storytelling performance—just speak plainly and directly. Avoid references to searches or technical processes."""
+synthesis_temperature = 0.4
+
 # Streamlit UI elements
 st.title("StarkBot")
+
+# Reset chat functionality
+if st.button("Reset Chat"):
+    st.session_state.messages = []
+    st.session_state.user_question = ""
 
 # Pinecone configuration
 pinecone_index_name = "starkbot"
@@ -31,56 +60,15 @@ pinecone_metric = "cosine"
 pinecone_cloud = "aws"
 pinecone_region = "us-east-1"
 
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone
 
 # Initialize Pinecone
 pinecone = Pinecone(api_key=pinecone_api_key)
 
-# Data chunking function
-def chunk_data(file_path, file_type):
-    if file_type == "pdf":
-        loader = PyPDFLoader(file_path)
-    elif file_type == "txt":
-        loader = TextLoader(file_path)
-    else:
-        raise ValueError("Unsupported file type")
-    
-    documents = loader.load()
-    text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-    chunks = text_splitter.split_documents(documents)
-    return chunks
-
-# Sidebar elements
-with st.sidebar:
-    # Gemini model selection
-    gemini_model = st.selectbox(
-        "Select Gemini Model",
-        ("gemini-2.0-flash-exp", "gemini-1.5-pro-latest"),
-    )
-
-    # File upload
-    uploaded_file = st.file_uploader("Upload a .pdf or .txt file", type=["pdf", "txt"])
-
-    # AI Model Parameters
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        max_tokens = st.slider("Max Tokens", min_value=1, max_value=8192, value=1096)
-    with col2:
-        temperature = st.slider("Temperature", min_value=0.0, max_value=1.0, value=0.0, step=0.01)
-    with col3:
-        top_p = st.slider("Top P", min_value=0.0, max_value=1.0, value=0.9, step=0.01)
-
-    # System Prompt
-    system_prompt = st.text_area("System Prompt", value="You are a helpful and harmless AI assistant. Please answer questions to the best of your ability, even if they are complex or controversial. Avoid generating responses that are based on copyrighted material. Avoid saying: 'According to the text', 'Based on the provided text', 'Based on the excerpts'. Simply provide the answer.")
-
-    # Initialize Gemini
-    genai.configure(api_key=gemini_api_key)
-    generation_config = genai.types.GenerationConfig(candidate_count=1, max_output_tokens=max_tokens, temperature=temperature, top_p=top_p)
-    gemini_llm = genai.GenerativeModel(model_name=gemini_model, generation_config=generation_config)
-
-    if st.button("Reset Chat"):
-        st.session_state.messages = []
-        st.session_state.user_question = ""
+# Initialize Gemini
+genai.configure(api_key=gemini_api_key)
+generation_config = genai.types.GenerationConfig(candidate_count=1, max_output_tokens=1096, temperature=0.0, top_p=0.7)
+gemini_llm = genai.GenerativeModel(model_name='gemini-2.0-flash-exp', generation_config=generation_config)
 
 # Initialize chat history
 if "messages" not in st.session_state:
@@ -94,46 +82,19 @@ for message in st.session_state.messages:
         
 # Chat interface
 user_question = st.text_area("Ask a question:", key="user_question", value=st.session_state.get("user_question", ""))
+
 ask_button = st.button("Ask", key="ask_button")
 
-# Upsert data to Pinecone
-if uploaded_file is not None:
-    # Generate a unique ID for the document
-    doc_id = hashlib.md5(uploaded_file.getbuffer()).hexdigest()
-
-    index = pinecone.Index(pinecone_index_name)
-
-    # Check if the document ID already exists in the index
-    if doc_id not in [v[0] for v in index.fetch(ids=[doc_id]).vectors.values()]:
-        # Save uploaded file to a temporary location
-        with open(uploaded_file.name, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-    
-        file_path = uploaded_file.name
-        file_type = uploaded_file.type.split("/")[1]  # Extract file extension
-    
-        chunks = chunk_data(file_path, file_type)
-    
-        for chunk in chunks:
-            chunk_id = uuid.uuid4().hex
-            #vector = gemini_embeddings.embed_query(chunk.page_content)
-            #index.upsert([(chunk_id, vector, {"text": chunk.page_content})])
-            embeddings = genai.embed_content(
-                model="models/embedding-001",
-                content=chunk.page_content,
-                task_type="retrieval_document",
-                title="Embedding of the document"
-            )
-            index.upsert(vectors=[(chunk_id, embeddings['embedding'], {"text": chunk.page_content})])
-    
-        st.success("Data uploaded to Pinecone!")
-    else:
-        st.info("File already exists in Pinecone. Skipping upsert.")
-
 if ask_button:
-    # RAG pipeline implementation
+    # Grounding Search
+    grounding_model = genai.GenerativeModel(model_name='gemini-2.0-flash-exp', generation_config=genai.types.GenerationConfig(temperature=grounding_temperature))
+    grounding_prompt_with_question = grounding_prompt.format(user_question=user_question)
+    grounding_response = grounding_model.generate_content(grounding_prompt_with_question)
+    grounding_results = grounding_response.text
+
+    # RAG Search
+    rag_model = genai.GenerativeModel(model_name='gemini-2.0-flash-exp', generation_config=genai.types.GenerationConfig(temperature=rag_temperature))
     index = pinecone.Index(pinecone_index_name)
-    # Fetch relevant chunks
     xq = genai.embed_content(
         model="models/embedding-001",
         content=user_question,
@@ -141,14 +102,16 @@ if ask_button:
     )
     results = index.query(vector=xq['embedding'], top_k=5, include_metadata=True)
     contexts = [match.metadata['text'] for match in results.matches]
+    rag_prompt_with_context = rag_prompt.format(user_question=user_question) + "\nContext:\n" + chr(10).join(contexts)
+    rag_response = rag_model.generate_content(rag_prompt_with_context)
+    rag_results = rag_response.text
 
-    prompt_with_context = f"""{system_prompt}
-    Context:
-    {chr(10).join(contexts)}
-    Question: {user_question}"""
-
+    # Response Synthesis
+    synthesis_model = genai.GenerativeModel(model_name='gemini-2.0-flash-exp', generation_config=genai.types.GenerationConfig(temperature=synthesis_temperature))
+    synthesis_prompt_with_results = synthesis_prompt.format(grounding_results=grounding_results, rag_results=rag_results)
+    
     try:
-        response = gemini_llm.generate_content(prompt_with_context)
+        response = synthesis_model.generate_content(synthesis_prompt_with_results)
         with st.chat_message("user"):
             st.write(user_question)
             st.session_state.messages.append({"role": "user", "content": user_question})
@@ -158,4 +121,7 @@ if ask_button:
             st.session_state.messages.append({"role": "assistant", "content": response.text})
 
     except Exception as e:
-        st.write(f"An error occurred: {e}")
+        if isinstance(e, ValueError) and "finish_reason" in str(e) and "4" in str(e):
+            st.write("I'm sorry, but I am unable to provide a response to that question due to copyright restrictions. Please try rephrasing your question or asking something different.")
+        else:
+            st.write(f"An error occurred: {e}")
